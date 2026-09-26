@@ -1,0 +1,10 @@
+.env
+*.sqlite
+*.db
+uploads/
+server
+file-upload
+.git/
+.idea/
+.vscode/
+.DS_Store
