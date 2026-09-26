@@ -1,0 +1,34 @@
+# Secrets — never commit real values
+.env
+*.env.local
+
+# SQLite databases
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Uploaded files (per-user dirs live here at runtime)
+uploads/
+tmp/
+
+# Go build output
+server
+file-upload
+/bin/
+/dist/
+*.exe
+*.out
+
+# Go module cache / test artifacts
+*.test
+*.prof
+coverage.out
+coverage.html
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
