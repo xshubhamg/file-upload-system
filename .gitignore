@@ -2,18 +2,19 @@
 .env
 *.env.local
 
-# SQLite databases
+# Local databases / dumps
 *.sqlite
 *.sqlite-journal
 *.db
+*.dump
 
-# Uploaded files (per-user dirs live here at runtime)
+# Local runtime
 uploads/
 tmp/
 
 # Go build output
-server
-file-upload
+/server
+/file-upload
 /bin/
 /dist/
 *.exe
