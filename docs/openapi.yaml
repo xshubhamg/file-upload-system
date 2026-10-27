@@ -1,0 +1,442 @@
+openapi: 3.0.3
+info:
+  title: file-upload API
+  version: 1.0.0
+  description: |
+    Authenticated file storage API. Clients register or log in, initiate an
+    upload to obtain a presigned S3-compatible URL, PUT the bytes directly to object
+    storage, then confirm the upload. Metadata lives in Postgres.
+
+    Legacy `/api/*` paths remain available as deprecated aliases. New clients
+    should use `/api/v1`.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: auth
+    description: Registration, login and rotating refresh tokens
+  - name: files
+    description: Presigned uploads and file metadata
+  - name: health
+    description: Liveness and readiness probes
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string, example: v1.0.0 }
+                  commit: { type: string, example: 37c8bef }
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: Checks Postgres and the configured object storage bucket.
+      security: []
+      responses:
+        "200":
+          description: All dependencies are available
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: One or more dependencies are unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Create an account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Log in and receive a token pair
+      description: |
+        Sets HttpOnly `accessToken` and `refreshToken` cookies and returns the
+        same tokens in the response body. Use `username` or `email`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate a refresh token
+      description: |
+        Refresh tokens are single-use. Replaying a rotated token revokes the
+        entire session family and returns `TOKEN_REUSE_DETECTED`.
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the current session
+      security: []
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+  /api/v1/auth/logout-all:
+    post:
+      tags: [auth]
+      summary: Revoke every refresh token for the current user
+      responses:
+        "200":
+          description: All sessions revoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Current user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/files/uploads:
+    post:
+      tags: [files]
+      summary: Initiate a presigned upload
+      description: |
+        Creates a pending file row and returns a short-lived presigned PUT URL.
+        The client must send `Content-Type` exactly as returned, PUT the bytes
+        to `upload.url`, then call `/api/v1/files/{id}/complete`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InitiateUploadRequest" }
+      responses:
+        "201":
+          description: Upload initiated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InitiateUploadResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+  /api/v1/files:
+    get:
+      tags: [files]
+      summary: List active files
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          description: Opaque value from `next_cursor`.
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of files
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/files/{id}:
+    get:
+      tags: [files]
+      summary: Get file metadata and a presigned download URL
+      parameters:
+        - $ref: "#/components/parameters/FileID"
+      responses:
+        "200":
+          description: File metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileWithURL" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [files]
+      summary: Delete a file
+      parameters:
+        - $ref: "#/components/parameters/FileID"
+      responses:
+        "204":
+          description: Deleted
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/files/{id}/complete:
+    post:
+      tags: [files]
+      summary: Confirm a presigned upload
+      description: |
+        Verifies the object exists, its size is within the limit, and its content
+        type is allowed. Rejected objects are deleted from storage.
+      parameters:
+        - $ref: "#/components/parameters/FileID"
+      responses:
+        "200":
+          description: File is active
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  file: { $ref: "#/components/schemas/File" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Upload missing, empty, or not completed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+  /api/v1/files/{id}/download:
+    get:
+      tags: [files]
+      summary: Redirect to a presigned download URL
+      parameters:
+        - $ref: "#/components/parameters/FileID"
+      responses:
+        "302":
+          description: Redirect to object storage
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: accessToken
+  parameters:
+    FileID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Unauthorized:
+      description: Missing, invalid, or expired credentials
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Conflict:
+      description: Resource conflict
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    PayloadTooLarge:
+      description: Payload exceeds the configured limit
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    UnsupportedMediaType:
+      description: MIME type is not allowed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [username, email, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 32
+          pattern: "^[A-Za-z0-9_-]+$"
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 8, maxLength: 72 }
+    LoginRequest:
+      type: object
+      required: [password]
+      properties:
+        username: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, maxLength: 72 }
+      description: Provide either `username` or `email`.
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        email: { type: string, format: email }
+        created_at: { type: string, format: date-time }
+    TokenPair:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, description: Access token lifetime in seconds }
+        refresh_expires_in: { type: integer, description: Refresh token lifetime in seconds }
+    AuthResponse:
+      allOf:
+        - $ref: "#/components/schemas/TokenPair"
+        - type: object
+          properties:
+            user: { $ref: "#/components/schemas/User" }
+    InitiateUploadRequest:
+      type: object
+      required: [filename, content_type, size_bytes]
+      properties:
+        filename: { type: string, maxLength: 255 }
+        content_type: { type: string, example: image/png }
+        size_bytes: { type: integer, format: int64, minimum: 1 }
+    PresignedUpload:
+      type: object
+      properties:
+        url: { type: string, format: uri }
+        method: { type: string, example: PUT }
+        headers:
+          type: object
+          additionalProperties: { type: string }
+        expires_at: { type: string, format: date-time }
+    InitiateUploadResponse:
+      type: object
+      properties:
+        file: { $ref: "#/components/schemas/File" }
+        upload: { $ref: "#/components/schemas/PresignedUpload" }
+    File:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        filename: { type: string }
+        content_type: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        status: { type: string, enum: [pending, active] }
+        created_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+    FileWithURL:
+      type: object
+      properties:
+        file: { $ref: "#/components/schemas/File" }
+        download_url: { type: string, format: uri }
+    FileList:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/File" }
+        next_cursor: { type: string }
+    Message:
+      type: object
+      properties:
+        message: { type: string }
+    Readiness:
+      type: object
+      properties:
+        status: { type: string, enum: [ready, unavailable] }
+        checks:
+          type: object
+          properties:
+            database: { type: string, enum: [ok, error] }
+            storage: { type: string, enum: [ok, error] }
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: { type: string }
+            request_id: { type: string }
