@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: fileupload
+          POSTGRES_PASSWORD: fileupload
+          POSTGRES_DB: file_upload_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fileupload -d file_upload_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      TEST_DATABASE_URL: postgres://fileupload:fileupload@localhost:5432/file_upload_test?sslmode=disable
+      TEST_S3_ENDPOINT: localhost:9091
+      TEST_S3_ACCESS_KEY: s3mock-access
+      TEST_S3_SECRET_KEY: s3mock-secret
+      TEST_S3_BUCKET: file-upload-test
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start S3Mock
+        run: |
+          docker run -d --name s3mock \
+            -p 9091:9090 \
+            -e COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS=file-upload-test \
+            adobe/s3mock:latest
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:9091/favicon.ico >/dev/null; then
+              echo "S3Mock is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "S3Mock failed to start"
+          docker logs s3mock
+          exit 1
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l cmd internal docs)"
+
+      - name: Verify
+        run: go vet ./...
+
+      - name: Test with race detector
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Build binary
+        run: make build VERSION=ci COMMIT="${GITHUB_SHA}" BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Build container
+        run: docker build -t file-upload:ci .
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: warn
