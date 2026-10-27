@@ -8,6 +8,10 @@ issues rotating refresh tokens, and never proxies file bytes in the primary
 upload/download flow.
 
 <p align="center">
+  <img src="docs/assets/file-upload-hero.png" alt="file-upload — authenticated direct-to-S3 file storage API in Go" width="100%">
+</p>
+
+<p align="center">
   <img src="docs/assets/file-upload-infographic.png" alt="file-upload architecture infographic: a client uploads directly to S3 with a presigned URL while a Go API manages authentication and Postgres metadata" width="520">
 </p>
 
