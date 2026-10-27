@@ -1,0 +1,95 @@
+# Local development stack: Postgres, S3Mock, and the API.
+# Copy .env.example to .env first, then: docker compose up --build
+#
+# S3Mock is a local test double, not production storage. It accepts presigned
+# URLs without validating signatures or expiry. Use real S3/MinIO in production.
+# MinIO's public Docker images were withdrawn, so the local stack uses S3Mock.
+#
+# Production notes:
+# - Pin image digests instead of using :latest.
+# - Put Postgres and object storage on private networks; only the API is public.
+# - Supply secrets from your orchestrator, not a committed .env file.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fileupload
+      POSTGRES_PASSWORD: fileupload
+      POSTGRES_DB: file_upload
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fileupload -d file_upload"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  s3mock:
+    image: adobe/s3mock:latest
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: file-upload
+      COM_ADOBE_TESTING_S3MOCK_STORE_ROOT: /s3mockroot
+      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "true"
+    ports:
+      # Container port 9090 is exposed on 9091 by default so the API admin
+      # listener can keep its documented 9090 host port.
+      - "${S3MOCK_HOST_PORT:-9091}:9090"
+    volumes:
+      - s3mock_data:/s3mockroot
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/favicon.ico"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      args:
+        VERSION: dev
+        COMMIT: local
+        BUILD_DATE: local
+    env_file:
+      - .env
+    environment:
+      APP_ENV: development
+      PORT: "8080"
+      ADMIN_PORT: "9090"
+      DATABASE_URL: postgres://fileupload:fileupload@postgres:5432/file_upload?sslmode=disable
+      S3_ENDPOINT: s3mock:9090
+      # Browsers on the host must reach S3Mock through the published port. The
+      # signature is host-specific, so presigning uses this endpoint.
+      S3_PUBLIC_ENDPOINT: localhost:${S3MOCK_HOST_PORT:-9091}
+      S3_BUCKET: file-upload
+      S3_ACCESS_KEY: s3mock-access
+      S3_SECRET_KEY: s3mock-secret
+      S3_AUTO_CREATE_BUCKET: "true"
+      AUTO_MIGRATE: "true"
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      COOKIE_SECURE: "false"
+    ports:
+      - "${API_HOST_PORT:-8080}:8080"
+      - "${ADMIN_HOST_PORT:-9090}:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      s3mock:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  s3mock_data:

@@ -1,26 +1,41 @@
-# SQLite via mattn/go-sqlite3 needs CGO, so the builder carries gcc.
+# syntax=docker/dockerfile:1.7
+
 FROM golang:1.27-alpine AS builder
 
-RUN apk add --no-cache gcc musl-dev sqlite-dev
+ARG VERSION=dev
+ARG COMMIT=none
+ARG BUILD_DATE=unknown
 
-WORKDIR /app
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -o server .
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w \
+      -X github.com/xshubhamg/file-upload/internal/version.Version=${VERSION} \
+      -X github.com/xshubhamg/file-upload/internal/version.Commit=${COMMIT} \
+      -X github.com/xshubhamg/file-upload/internal/version.BuildDate=${BUILD_DATE}" \
+    -o /out/server ./cmd/server
 
-FROM alpine:latest
+FROM alpine:3.22
 
-RUN apk add --no-cache ca-certificates sqlite-libs
+RUN apk add --no-cache ca-certificates tzdata wget \
+    && addgroup -S -g 10001 app \
+    && adduser -S -D -H -u 10001 -G app app
 
 WORKDIR /app
-COPY --from=builder /app/server ./server
+COPY --from=builder /out/server ./server
 
-# Render / Fly / most hosts inject PORT; default matches .env.example.
-ENV PORT=8080
-EXPOSE 8080
+USER 10001:10001
 
-VOLUME ["/app/uploads"]
+ENV PORT=8080 \
+    ADMIN_PORT=9090
 
-CMD ["./server"]
+EXPOSE 8080 9090
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1
+
+ENTRYPOINT ["/app/server"]
